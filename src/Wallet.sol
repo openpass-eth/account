@@ -12,28 +12,34 @@ import "./interfaces/IModule.sol";
 import "./interfaces/IWallet.sol";
 import "./libraries/DefaultCallbackHandler.sol";
 
+import {WebAuthn} from "./libraries/WebAuthn.sol";
+
 /**
  * @title Wallet
  * @author imduchuyyy
  * @notice This contract represents a Wallet in the system.
  */
-contract Wallet is IWallet, IERC1271, BaseAccount, Initializable, DefaultCallbackHandler, UUPSUpgradeable {
+contract Wallet is
+    IWallet,
+    IERC1271,
+    BaseAccount,
+    Initializable,
+    DefaultCallbackHandler,
+    UUPSUpgradeable
+{
     using ECDSA for bytes32;
     using Address for address;
 
-    address public immutable SENTINEL_ADDRESS = address(0x1);
-    bytes32 public immutable KEY_MANAGE_PREFIX_SLOT = bytes32(uint256(keccak256("contract.v1.key-manage")) - 1);
-    bytes32 public immutable KEY_COUNT_SLOT = bytes32(uint256(keccak256("contract.v1.key-count")) - 1);
-
     IEntryPoint private immutable _entryPoint;
-
-    struct CallbackModule {
-        UserOperation userOp;
-        address module;
-        bytes32 userOpHash;
+    struct SigningKey {
+        address signer; // for address
+        uint256 x; // for passkey
+        uint256 y;
     }
 
-    CallbackModule private _callbackCache;
+    mapping(bytes32 => SigningKey) private _signingKeys;
+    address private _recoveryAddress;
+    string private _walletData;
 
     constructor(address entryPointAddress) {
         _entryPoint = IEntryPoint(entryPointAddress);
@@ -42,15 +48,20 @@ contract Wallet is IWallet, IERC1271, BaseAccount, Initializable, DefaultCallbac
     /**
      * @notice This function is used to initialize the wallet with an initial key.
      */
-    function __Wallet_init(bytes memory initData) external initializer {
-        (address bootstrap, bytes memory callData) = abi.decode(initData, (address, bytes));
-        (bool success,) = bootstrap.delegatecall(callData);
-        if (!success) revert("Wallet: Bootstrap failed");
-    }
+    function __Wallet_init(
+        bytes32 keyId,
+        address signer,
+        uint256 x,
+        uint256 y,
+        address recoveryAddress,
+        string memory walletData
+    ) external initializer {
+        _signingKeys[keyId].signer = signer;
+        _signingKeys[keyId].x = x;
+        _signingKeys[keyId].y = y;
 
-    modifier moduleCallback() {
-        _;
-        _moduleCallback();
+        _recoveryAddress = recoveryAddress;
+        _walletData = walletData;
     }
 
     modifier authorized() {
@@ -58,59 +69,48 @@ contract Wallet is IWallet, IERC1271, BaseAccount, Initializable, DefaultCallbac
         _;
     }
 
+    modifier authorizedOrRecoveryAddress() {
+        require(
+            _isValidCaller() || msg.sender == _recoveryAddress,
+            "Wallet: Invalid Caller"
+        );
+        _;
+    }
+
     function _authorizeUpgrade(address) internal override authorized {}
 
-    function _setKey(address key, address value) internal {
-        bytes32 slotKey = keccak256(abi.encode(KEY_MANAGE_PREFIX_SLOT, key));
-        StorageSlot.getAddressSlot(slotKey).value = value;
-    }
+    function _validateSignature(
+        UserOperation calldata userOp,
+        bytes32 userOpHash
+    ) internal view override returns (uint256 validationData) {
+        bytes32 keyId = bytes32(userOp.signature[:32]);
+        bytes memory trueSignature = userOp.signature[32:];
 
-    function _getKey(address key) internal view returns (address) {
-        bytes32 slotKey = keccak256(abi.encode(KEY_MANAGE_PREFIX_SLOT, key));
-        return StorageSlot.getAddressSlot(slotKey).value;
-    }
-
-    function _increaseTotalKey() internal {
-        StorageSlot.getUint256Slot(KEY_COUNT_SLOT).value++;
-    }
-
-    function _decreaseTotalKey() internal {
-        StorageSlot.getUint256Slot(KEY_COUNT_SLOT).value--;
-    }
-
-    function _getTotalKey() internal view returns (uint256) {
-        return StorageSlot.getUint256Slot(KEY_COUNT_SLOT).value;
-    }
-
-    function _moduleCallback() internal {
-        if (_callbackCache.module != address(0)) {
-            IModule(_callbackCache.module).callback(_callbackCache.userOp, _callbackCache.userOpHash);
-            delete _callbackCache;
-        }
-    }
-
-    function _validateSignature(UserOperation calldata userOp, bytes32 userOpHash)
-        internal
-        override
-        returns (uint256 validationData)
-    {
-        address key = address(bytes20(userOp.signature[:20]));
-        bytes memory trueSignature = userOp.signature[20:];
-
-        if (isValidKey(key)) {
-            if (key.isContract()) {
-                _callbackCache = CallbackModule(userOp, key, userOpHash);
-                validationData = IModule(key).validateUserOp(userOp, userOpHash);
+        if (_signingKeys[keyId].signer != address(0)) {
+            bytes32 hash = userOpHash.toEthSignedMessageHash();
+            if (hash.recover(trueSignature) == _signingKeys[keyId].signer) {
+                validationData = 0;
             } else {
-                bytes32 hash = userOpHash.toEthSignedMessageHash();
-                if (key == hash.recover(trueSignature)) {
-                    validationData = 0;
-                } else {
-                    validationData = SIG_VALIDATION_FAILED;
-                }
+                validationData = SIG_VALIDATION_FAILED;
             }
         } else {
-            validationData = SIG_VALIDATION_FAILED;
+            WebAuthn.WebAuthnAuth memory auth = abi.decode(
+                trueSignature,
+                (WebAuthn.WebAuthnAuth)
+            );
+            if (
+                WebAuthn.verify({
+                    challenge: abi.encode(userOpHash),
+                    requireUV: false,
+                    webAuthnAuth: auth,
+                    x: _signingKeys[keyId].x,
+                    y: _signingKeys[keyId].y
+                })
+            ) {
+                validationData = 0;
+            } else {
+                validationData = SIG_VALIDATION_FAILED;
+            }
         }
     }
 
@@ -118,7 +118,8 @@ contract Wallet is IWallet, IERC1271, BaseAccount, Initializable, DefaultCallbac
      * @notice only accept entrypoint or self call
      */
     function _isValidCaller() internal view returns (bool) {
-        return msg.sender == address(entryPoint()) || msg.sender == address(this);
+        return
+            msg.sender == address(entryPoint()) || msg.sender == address(this);
     }
 
     /**
@@ -133,48 +134,44 @@ contract Wallet is IWallet, IERC1271, BaseAccount, Initializable, DefaultCallbac
         }
     }
 
+    function addKey(
+        bytes32 keyId,
+        SigningKey memory signingKey,
+        string memory walletData
+    ) external authorizedOrRecoveryAddress {
+        _signingKeys[keyId] = signingKey;
+        _walletData = walletData;
+    }
+
+    function removeKey(
+        bytes32 keyId,
+        string memory walletData
+    ) external authorizedOrRecoveryAddress {
+        delete _signingKeys[keyId];
+        _walletData = walletData;
+    }
+
     /// @inheritdoc IWallet
-    function execute(address dest, uint256 value, bytes calldata func)
-        external
-        override(IWallet)
-        authorized
-        moduleCallback
-    {
+    function execute(
+        address dest,
+        uint256 value,
+        bytes calldata func
+    ) external override(IWallet) authorized {
         _call(dest, value, func);
         emit Execute();
     }
 
     /// @inheritdoc IWallet
-    function executeBatch(address[] calldata dest, uint256[] calldata values, bytes[] calldata func)
-        external
-        override(IWallet)
-        authorized
-        moduleCallback
-    {
+    function executeBatch(
+        address[] calldata dest,
+        uint256[] calldata values,
+        bytes[] calldata func
+    ) external override(IWallet) authorized {
         require(dest.length == func.length, "Wrong array lengths");
         for (uint256 i = 0; i < dest.length; i++) {
             _call(dest[i], values[i], func[i]);
         }
         emit Execute();
-    }
-
-    function addKey(address key) external override authorized moduleCallback {
-        require(key != address(0) && key != SENTINEL_ADDRESS && key != address(this), "Invalid Key");
-        address firstKey = _getKey(SENTINEL_ADDRESS);
-        _setKey(key, firstKey);
-        _setKey(SENTINEL_ADDRESS, key);
-
-        _increaseTotalKey();
-    }
-
-    function removeKey(address prevKey, address key) external override authorized moduleCallback {
-        require(key != address(0) && key != SENTINEL_ADDRESS, "Invalid Key");
-        require(_getKey(prevKey) == key, "Invalid prevKey");
-
-        _setKey(prevKey, _getKey(key));
-        _setKey(key, address(0));
-
-        _decreaseTotalKey();
     }
 
     function entryPoint() public view override returns (IEntryPoint) {
@@ -184,54 +181,38 @@ contract Wallet is IWallet, IERC1271, BaseAccount, Initializable, DefaultCallbac
     /**
      * validate signature base on IERC1271
      */
-    function isValidSignature(bytes32 hash, bytes calldata signature)
-        public
-        view
-        override
-        returns (bytes4 magicValue)
-    {
-        address key = address(bytes20(signature[:20]));
-        bytes memory trueSignature = signature[20:];
+    function isValidSignature(
+        bytes32 signMessage,
+        bytes calldata signature
+    ) public view override returns (bytes4 magicValue) {
+        bytes32 keyId = bytes32(signature[:32]);
+        bytes memory trueSignature = signature[32:];
 
-        if (isValidKey(key)) {
-            if (key.isContract()) {
-                magicValue = IModule(key).isValidSignature(hash, trueSignature);
+        if (_signingKeys[keyId].signer != address(0)) {
+            bytes32 hash = signMessage.toEthSignedMessageHash();
+            if (hash.recover(trueSignature) == _signingKeys[keyId].signer) {
+                magicValue = this.isValidSignature.selector;
             } else {
-                if (key == hash.recover(trueSignature)) {
-                    magicValue = this.isValidSignature.selector;
-                } else {
-                    magicValue = bytes4(0xffffffff);
-                }
+                magicValue = 0;
             }
         } else {
-            magicValue = bytes4(0xffffffff);
+            WebAuthn.WebAuthnAuth memory auth = abi.decode(
+                trueSignature,
+                (WebAuthn.WebAuthnAuth)
+            );
+            if (
+                WebAuthn.verify({
+                    challenge: abi.encode(signMessage),
+                    requireUV: false,
+                    webAuthnAuth: auth,
+                    x: _signingKeys[keyId].x,
+                    y: _signingKeys[keyId].y
+                })
+            ) {
+                magicValue = this.isValidSignature.selector;
+            } else {
+                magicValue = 0;
+            }
         }
-    }
-
-    function isValidKey(address key) public view returns (bool) {
-        return _getKey(key) != address(0) && key != SENTINEL_ADDRESS;
-    }
-
-    function getTotalKey() public view returns (uint256) {
-        return _getTotalKey();
-    }
-
-    /**
-     * @notice This function is used to get the current keys of the wallet.
-     * @return keys The current keys of the wallet.
-     */
-    function getKeys() external view returns (address[] memory keys) {
-        uint256 totalKey = getTotalKey();
-        address[] memory array = new address[](totalKey);
-
-        // populate return array
-        uint256 index = 0;
-        address currentKey = _getKey(SENTINEL_ADDRESS);
-        while (currentKey != SENTINEL_ADDRESS) {
-            array[index] = currentKey;
-            currentKey = _getKey(currentKey);
-            index++;
-        }
-        return array;
     }
 }

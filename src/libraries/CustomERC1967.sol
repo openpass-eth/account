@@ -21,12 +21,12 @@ contract CustomERC1967 is Proxy, ERC1967Upgrade {
      * If `_data` is nonempty, it's used as data in a delegate call to `_logic`. This will typically be an encoded
      * function call, and allows initializing the storage of the proxy like a Solidity constructor.
      */
-    function initialize(address _logic, bytes memory _data) public {
+    function initialize(address _logic) public {
         address implementation = _implementation();
         require(implementation == address(0), "ERC1967: already initialized");
         require(_logic != address(0), "ERC1967: logic is zero");
 
-        _upgradeToAndCall(_logic, _data, false);
+        _upgradeTo(_logic);
     }
 
     /**

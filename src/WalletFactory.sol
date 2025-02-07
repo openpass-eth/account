@@ -16,37 +16,56 @@ import "./Wallet.sol";
 contract WalletFactory is IWalletFactory {
     Wallet public immutable walletImplement;
 
+    mapping(bytes32 => address) public wallets;
+
     constructor(address entryPoint) {
         walletImplement = new Wallet(entryPoint);
     }
 
-    function _createWallet(bytes memory initData, bytes32 salt) internal returns (Wallet) {
-        address payable walletAddress = getWalletAddress(salt);
+    function createWallet(
+        bytes32 username,
+        bytes32 keyId,
+        address signer,
+        uint256 x,
+        uint256 y,
+        address recoveryAddress,
+        string memory walletData
+    ) external returns (Wallet) {
+        address payable walletAddress = getWalletAddress(username);
         uint256 codeSize = walletAddress.code.length;
         if (codeSize > 0) {
             return Wallet(walletAddress);
         }
 
-        CustomERC1967 proxy = new CustomERC1967{ salt: salt }();
-        proxy.initialize(address(walletImplement), abi.encodeWithSignature("__Wallet_init(bytes)", initData));
+        CustomERC1967 proxy = new CustomERC1967{salt: username}();
+        proxy.initialize(address(walletImplement));
+        Wallet(walletAddress).__Wallet_init(
+            keyId,
+            signer,
+            x,
+            y,
+            recoveryAddress,
+            walletData
+        );
+
+        wallets[username] = walletAddress;
 
         return Wallet(walletAddress);
     }
 
-    function createWallet(bytes memory initData, bytes32 salt) external returns (Wallet) {
-        return _createWallet(initData, salt);
-    }
-
-    function getWalletCreationCodeHash() public pure returns(bytes32) {
+    function getWalletCreationCodeHash() public pure returns (bytes32) {
         return keccak256(type(CustomERC1967).creationCode);
     }
 
-    function getWalletAddress(bytes32 salt) public view returns (address payable) {
-        return payable(
-            Create2.computeAddress(
-                salt,
-                keccak256(type(CustomERC1967).creationCode)
-            )
-        );
+    function getWalletAddress(
+        bytes32 username
+    ) public view returns (address payable) {
+        return
+            payable(
+                Create2.computeAddress(
+                    username,
+                    keccak256(type(CustomERC1967).creationCode)
+                )
+            );
     }
 }
