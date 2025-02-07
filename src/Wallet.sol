@@ -151,6 +151,12 @@ contract Wallet is
         _walletData = walletData;
     }
 
+    function setWalletData(
+        string memory walletData
+    ) external authorizedOrRecoveryAddress {
+        _walletData = walletData;
+    }
+
     /// @inheritdoc IWallet
     function execute(
         address dest,
