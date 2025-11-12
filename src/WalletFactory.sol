@@ -25,10 +25,8 @@ contract WalletFactory is IWalletFactory {
     function createWallet(
         bytes32 username,
         uint256 x,
-        uint256 y,
-        string memory walletData
+        uint256 y
     ) external returns (Wallet) {
-        /*
         address payable walletAddress = getWalletAddress(username);
         uint256 codeSize = walletAddress.code.length;
         if (codeSize > 0) {
@@ -38,25 +36,20 @@ contract WalletFactory is IWalletFactory {
         CustomERC1967 proxy = new CustomERC1967{salt: username}();
         proxy.initialize(address(walletImplement));
         Wallet(walletAddress).__Wallet_init(
-            keyId,
-            signer,
             x,
-            y,
-            recoveryAddress,
-            walletData
+            y
         );
 
         wallets[username] = walletAddress;
 
         return Wallet(walletAddress);
-        */
     }
 
     function getWalletCreationCodeHash() public pure returns (bytes32) {
         return keccak256(type(CustomERC1967).creationCode);
     }
 
-    function etWalletAddress(
+    function getWalletAddress(
         bytes32 username
     ) public view returns (address payable) {
         return

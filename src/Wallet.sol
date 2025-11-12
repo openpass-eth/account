@@ -51,7 +51,6 @@ contract Wallet is
     RecoveryRequest private _recoveryRequest;
 
     address private _guardian;
-    string private _walletData;
 
     constructor(address entryPointAddress) {
         _entryPoint = IEntryPoint(entryPointAddress);
@@ -62,12 +61,10 @@ contract Wallet is
      */
     function __Wallet_init(
         uint256 x,
-        uint256 y,
-        string memory walletData
+        uint256 y
     ) external initializer {
         _signer.x = x;
         _signer.y = y;
-        _walletData = walletData;
     }
 
     modifier authorized() {
