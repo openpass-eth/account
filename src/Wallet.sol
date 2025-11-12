@@ -32,13 +32,25 @@ contract Wallet is
 
     IEntryPoint private immutable _entryPoint;
     struct SigningKey {
-        address signer; // for address
         uint256 x; // for passkey
         uint256 y;
     }
 
-    mapping(bytes32 => SigningKey) private _signingKeys;
-    address private _recoveryAddress;
+    struct Recovery {
+        address recoveryWallet;
+        uint256 delayTime;
+    }
+
+    struct RecoveryRequest {
+        SigningKey newSigner;
+        uint256 requestTime;
+    }
+
+    SigningKey private _signer;
+    Recovery private _recovery;
+    RecoveryRequest private _recoveryRequest;
+
+    address private _guardian;
     string private _walletData;
 
     constructor(address entryPointAddress) {
@@ -49,31 +61,17 @@ contract Wallet is
      * @notice This function is used to initialize the wallet with an initial key.
      */
     function __Wallet_init(
-        bytes32 keyId,
-        address signer,
         uint256 x,
         uint256 y,
-        address recoveryAddress,
         string memory walletData
     ) external initializer {
-        _signingKeys[keyId].signer = signer;
-        _signingKeys[keyId].x = x;
-        _signingKeys[keyId].y = y;
-
-        _recoveryAddress = recoveryAddress;
+        _signer.x = x;
+        _signer.y = y;
         _walletData = walletData;
     }
 
     modifier authorized() {
         require(_isValidCaller(), "Wallet: Invalid Caller");
-        _;
-    }
-
-    modifier authorizedOrRecoveryAddress() {
-        require(
-            _isValidCaller() || msg.sender == _recoveryAddress,
-            "Wallet: Invalid Caller"
-        );
         _;
     }
 
@@ -83,19 +81,37 @@ contract Wallet is
         UserOperation calldata userOp,
         bytes32 userOpHash
     ) internal view override returns (uint256 validationData) {
-        bytes32 keyId = bytes32(userOp.signature[:32]);
-        bytes memory trueSignature = userOp.signature[32:];
-
-        if (_signingKeys[keyId].signer != address(0)) {
-            bytes32 hash = userOpHash.toEthSignedMessageHash();
-            if (hash.recover(trueSignature) == _signingKeys[keyId].signer) {
-                validationData = 0;
-            } else {
-                validationData = SIG_VALIDATION_FAILED;
+        bytes calldata signature = userOp.signature;
+        if (_guardian != address(0)) {
+            // Verify guardian signature first for all operations
+            bytes32 messageHash = userOpHash.toEthSignedMessageHash();
+            address recoveredGuardian = messageHash.recover(
+                signature[:65]
+            );
+            if (recoveredGuardian != _guardian) {
+                // immediate failure if guardian signature is invalid
+                return SIG_VALIDATION_FAILED;
+            }
+            signature = signature[65:];
+        }
+        if (bytes4(userOp.callData[:4]) == IWallet.requestRecovery.selector) {
+            // In case of recovery request, verify recovery address signature
+            bytes32 messageHash = userOpHash.toEthSignedMessageHash();
+            address recoveredRecoveryAddress = messageHash.recover(
+                signature[:65]
+            );
+            if (recoveredRecoveryAddress == address(0) || recoveredRecoveryAddress != _recovery.recoveryWallet) {
+                // immediate failure if recovery address signature is invalid
+                return SIG_VALIDATION_FAILED;
             }
         } else {
+            SigningKey memory signer = _signer;
+            if (bytes4(userOp.callData[:4]) == IWallet.completeRecovery.selector) {
+                // In case of completing recovery, use the new signer from recovery request
+                signer = _recoveryRequest.newSigner;
+            }
             WebAuthn.WebAuthnAuth memory auth = abi.decode(
-                trueSignature,
+                signature,
                 (WebAuthn.WebAuthnAuth)
             );
             if (
@@ -103,8 +119,8 @@ contract Wallet is
                     challenge: abi.encode(userOpHash),
                     requireUV: false,
                     webAuthnAuth: auth,
-                    x: _signingKeys[keyId].x,
-                    y: _signingKeys[keyId].y
+                    x: signer.x,
+                    y: signer.y
                 })
             ) {
                 validationData = 0;
@@ -134,29 +150,6 @@ contract Wallet is
         }
     }
 
-    function addKey(
-        bytes32 keyId,
-        SigningKey memory signingKey,
-        string memory walletData
-    ) external authorizedOrRecoveryAddress {
-        _signingKeys[keyId] = signingKey;
-        _walletData = walletData;
-    }
-
-    function removeKey(
-        bytes32 keyId,
-        string memory walletData
-    ) external authorizedOrRecoveryAddress {
-        delete _signingKeys[keyId];
-        _walletData = walletData;
-    }
-
-    function setWalletData(
-        string memory walletData
-    ) external authorizedOrRecoveryAddress {
-        _walletData = walletData;
-    }
-
     /// @inheritdoc IWallet
     function execute(
         address dest,
@@ -180,6 +173,74 @@ contract Wallet is
         emit Execute();
     }
 
+    function updateSigner(
+        uint256 newX,
+        uint256 newY
+    ) external override(IWallet) authorized {
+        _signer.x = newX;
+        _signer.y = newY;
+        emit SignerUpdated(newX, newY);
+    }
+
+    function updateRecovery(
+        address recoveryWallet,
+        uint256 delayTime
+    ) external override(IWallet) authorized {
+        _recovery = Recovery({
+            recoveryWallet: recoveryWallet,
+            delayTime: delayTime
+        });
+
+        emit RecoveryUpdated(recoveryWallet, delayTime);
+    }
+
+    function updateGuardian(
+        address newGuardian
+    ) external override(IWallet) authorized {
+        _guardian = newGuardian;
+        emit GuardianUpdated(newGuardian);
+    }
+
+    function requestRecovery(
+        uint256 newX,
+        uint256 newY
+    ) external override(IWallet) authorized {
+        require(_recovery.recoveryWallet != address(0), "No recovery set");
+        _recoveryRequest = RecoveryRequest({
+            newSigner: SigningKey({x: newX, y: newY}),
+            requestTime: block.timestamp
+        });
+
+        emit RequestRecovery(newX, newY, block.timestamp);
+    }
+
+    function rejectRecovery() external override(IWallet) authorized {
+        delete _recoveryRequest;
+        emit RejectRecovery();
+    }
+
+    function completeRecovery()
+        external
+        override(IWallet)
+        authorized
+    {
+        require(_recovery.recoveryWallet != address(0), "No recovery set");
+        require(
+            _recoveryRequest.requestTime != 0,
+            "No recovery request"
+        );
+        require(
+            block.timestamp >=
+                _recoveryRequest.requestTime + _recovery.delayTime,
+            "Recovery delay not passed"
+        );
+
+        _signer = _recoveryRequest.newSigner;
+        delete _recoveryRequest;
+
+        emit RecoverCompleted(_signer.x, _signer.y);
+    }
+
     function entryPoint() public view override returns (IEntryPoint) {
         return _entryPoint;
     }
@@ -191,34 +252,33 @@ contract Wallet is
         bytes32 signMessage,
         bytes calldata signature
     ) public view override returns (bytes4 magicValue) {
-        bytes32 keyId = bytes32(signature[:32]);
-        bytes memory trueSignature = signature[32:];
-
-        if (_signingKeys[keyId].signer != address(0)) {
-            bytes32 hash = signMessage.toEthSignedMessageHash();
-            if (hash.recover(trueSignature) == _signingKeys[keyId].signer) {
-                magicValue = this.isValidSignature.selector;
-            } else {
-                magicValue = 0;
-            }
-        } else {
-            WebAuthn.WebAuthnAuth memory auth = abi.decode(
-                trueSignature,
-                (WebAuthn.WebAuthnAuth)
+        if (_guardian != address(0)) {
+            bytes32 messageHash = signMessage.toEthSignedMessageHash();
+            address recoveredGuardian = messageHash.recover(
+                signature[:65]
             );
-            if (
-                WebAuthn.verify({
-                    challenge: abi.encode(signMessage),
-                    requireUV: false,
-                    webAuthnAuth: auth,
-                    x: _signingKeys[keyId].x,
-                    y: _signingKeys[keyId].y
-                })
-            ) {
-                magicValue = this.isValidSignature.selector;
-            } else {
-                magicValue = 0;
+            if (recoveredGuardian != _guardian) {
+                // immediate failure if guardian signature is invalid
+                return 0x00000000;
             }
+            signature = signature[65:];
+        }
+        WebAuthn.WebAuthnAuth memory auth = abi.decode(
+            signature,
+            (WebAuthn.WebAuthnAuth)
+        );
+        if (
+            WebAuthn.verify({
+                challenge: abi.encode(signMessage),
+                requireUV: false,
+                webAuthnAuth: auth,
+                x: _signer.x,
+                y: _signer.y
+            })
+        ) {
+            magicValue = this.isValidSignature.selector;
+        } else {
+            magicValue = 0x00000000;
         }
     }
 }

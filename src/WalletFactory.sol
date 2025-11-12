@@ -24,13 +24,11 @@ contract WalletFactory is IWalletFactory {
 
     function createWallet(
         bytes32 username,
-        bytes32 keyId,
-        address signer,
         uint256 x,
         uint256 y,
-        address recoveryAddress,
         string memory walletData
     ) external returns (Wallet) {
+        /*
         address payable walletAddress = getWalletAddress(username);
         uint256 codeSize = walletAddress.code.length;
         if (codeSize > 0) {
@@ -51,13 +49,14 @@ contract WalletFactory is IWalletFactory {
         wallets[username] = walletAddress;
 
         return Wallet(walletAddress);
+        */
     }
 
     function getWalletCreationCodeHash() public pure returns (bytes32) {
         return keccak256(type(CustomERC1967).creationCode);
     }
 
-    function getWalletAddress(
+    function etWalletAddress(
         bytes32 username
     ) public view returns (address payable) {
         return
