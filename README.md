@@ -25,3 +25,7 @@ An smart security wallet for your digital assets.
 9. Regularly update the wallet software to patch vulnerabilities and improve security features.
 10. Implement a secure backup mechanism for wallet data to prevent loss due to device failure.
 
+## Operation authorization
+### Without Guardian
+- Normal transactions: passkeys required
+

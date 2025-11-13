@@ -61,10 +61,12 @@ contract Wallet is
      */
     function __Wallet_init(
         uint256 x,
-        uint256 y
+        uint256 y,
+        string memory walletData
     ) external initializer {
         _signer.x = x;
         _signer.y = y;
+        _walletData = walletData;
     }
 
     modifier authorized() {
