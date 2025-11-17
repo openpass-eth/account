@@ -18,11 +18,6 @@ interface IWallet {
     function updateSigner(uint256 newX, uint256 newY) external;
 
     /**
-     * update guardian address
-     */
-    function updateGuardian(address newGuardian) external;
-
-    /**
      * update recovery wallet and delay time
      */
     function updateRecovery(address recoveryWallet, uint256 delayTime) external;

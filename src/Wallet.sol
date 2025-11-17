@@ -7,6 +7,7 @@ import "openzeppelin/utils/cryptography/ECDSA.sol";
 import "openzeppelin/utils/StorageSlot.sol";
 import "openzeppelin/proxy/utils/UUPSUpgradeable.sol";
 import "openzeppelin/interfaces/IERC1271.sol";
+import "openzeppelin/utils/cryptography/SignatureChecker.sol";
 
 import "./interfaces/IModule.sol";
 import "./interfaces/IWallet.sol";
@@ -42,15 +43,13 @@ contract Wallet is
     }
 
     struct RecoveryRequest {
-        SigningKey newSigner;
         uint256 requestTime;
+        SigningKey newSigner;
     }
 
     SigningKey private _signer;
     Recovery private _recovery;
     RecoveryRequest private _recoveryRequest;
-
-    address private _guardian;
 
     constructor(address entryPointAddress) {
         _entryPoint = IEntryPoint(entryPointAddress);
@@ -61,12 +60,10 @@ contract Wallet is
      */
     function __Wallet_init(
         uint256 x,
-        uint256 y,
-        string memory walletData
+        uint256 y
     ) external initializer {
         _signer.x = x;
         _signer.y = y;
-        _walletData = walletData;
     }
 
     modifier authorized() {
@@ -81,26 +78,16 @@ contract Wallet is
         bytes32 userOpHash
     ) internal view override returns (uint256 validationData) {
         bytes calldata signature = userOp.signature;
-        if (_guardian != address(0)) {
-            // Verify guardian signature first for all operations
-            bytes32 messageHash = userOpHash.toEthSignedMessageHash();
-            address recoveredGuardian = messageHash.recover(
-                signature[:65]
-            );
-            if (recoveredGuardian != _guardian) {
-                // immediate failure if guardian signature is invalid
-                return SIG_VALIDATION_FAILED;
-            }
-            signature = signature[65:];
-        }
         if (bytes4(userOp.callData[:4]) == IWallet.requestRecovery.selector) {
             // In case of recovery request, verify recovery address signature
             bytes32 messageHash = userOpHash.toEthSignedMessageHash();
-            address recoveredRecoveryAddress = messageHash.recover(
+            if (SignatureChecker.isValidSignatureNow(
+                _recovery.recoveryWallet,
+                messageHash,
                 signature[:65]
-            );
-            if (recoveredRecoveryAddress == address(0) || recoveredRecoveryAddress != _recovery.recoveryWallet) {
-                // immediate failure if recovery address signature is invalid
+            )) {
+                validationData = 0;
+            } else {
                 return SIG_VALIDATION_FAILED;
             }
         } else {
@@ -193,13 +180,6 @@ contract Wallet is
         emit RecoveryUpdated(recoveryWallet, delayTime);
     }
 
-    function updateGuardian(
-        address newGuardian
-    ) external override(IWallet) authorized {
-        _guardian = newGuardian;
-        emit GuardianUpdated(newGuardian);
-    }
-
     function requestRecovery(
         uint256 newX,
         uint256 newY
@@ -251,17 +231,6 @@ contract Wallet is
         bytes32 signMessage,
         bytes calldata signature
     ) public view override returns (bytes4 magicValue) {
-        if (_guardian != address(0)) {
-            bytes32 messageHash = signMessage.toEthSignedMessageHash();
-            address recoveredGuardian = messageHash.recover(
-                signature[:65]
-            );
-            if (recoveredGuardian != _guardian) {
-                // immediate failure if guardian signature is invalid
-                return 0x00000000;
-            }
-            signature = signature[65:];
-        }
         WebAuthn.WebAuthnAuth memory auth = abi.decode(
             signature,
             (WebAuthn.WebAuthnAuth)
