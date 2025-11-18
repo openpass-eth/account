@@ -16,31 +16,27 @@ import "./Wallet.sol";
 contract WalletFactory is IWalletFactory {
     Wallet public immutable walletImplement;
 
-    mapping(bytes32 => address) public wallets;
-
     constructor(address entryPoint) {
         walletImplement = new Wallet(entryPoint);
     }
 
     function createWallet(
-        bytes32 username,
         uint256 x,
         uint256 y
     ) external returns (Wallet) {
-        address payable walletAddress = getWalletAddress(username);
+        bytes32 salt = keccak256(abi.encodePacked(x, y));
+        address payable walletAddress = getWalletAddress(x, y);
         uint256 codeSize = walletAddress.code.length;
         if (codeSize > 0) {
             return Wallet(walletAddress);
         }
 
-        CustomERC1967 proxy = new CustomERC1967{salt: username}();
+        CustomERC1967 proxy = new CustomERC1967{salt: salt}();
         proxy.initialize(address(walletImplement));
         Wallet(walletAddress).__Wallet_init(
             x,
             y
         );
-
-        wallets[username] = walletAddress;
 
         return Wallet(walletAddress);
     }
@@ -50,12 +46,14 @@ contract WalletFactory is IWalletFactory {
     }
 
     function getWalletAddress(
-        bytes32 username
+        uint256 x,
+        uint256 y
     ) public view returns (address payable) {
+        bytes32 salt = keccak256(abi.encodePacked(x, y));
         return
             payable(
                 Create2.computeAddress(
-                    username,
+                    salt,
                     keccak256(type(CustomERC1967).creationCode)
                 )
             );
