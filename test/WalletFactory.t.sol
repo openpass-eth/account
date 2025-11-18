@@ -23,15 +23,12 @@ contract WalletFactoryTest is Test {
         passkey = new PasskeyModule();
     }
 
-    function testCreateWalletWithPasskey() external {
-        bytes32 salt = keccak256("testCreateWalletWithPasskey");
+    function test_calculateWalletAddress() external {
+        uint256 x = 123456789;
+        uint256 y = 987654321;
+
+        address predictedAddress = walletFactory.getWalletAddress(x, y);
+        Wallet deployedWallet = walletFactory.createWallet(x, y);
+        assertEq(predictedAddress, address(deployedWallet));
     }
-
-    // function testComputeAddress() external {
-    //     bytes32 salt = keccak256("test wallet");
-    //     address walletAddress = walletFactory.getWalletAddress(salt);
-    //     Wallet wallet = walletFactory.createWallet(address(this), salt);
-
-    //     require(walletAddress == address(wallet), "wallet address should be equal");
-    // }
 }
