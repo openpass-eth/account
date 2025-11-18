@@ -152,7 +152,7 @@ contract Wallet is
         uint256[] calldata values,
         bytes[] calldata func
     ) external override(IWallet) authorized {
-        require(dest.length == func.length, "Wrong array lengths");
+        require(dest.length == func.length && dest.length == values.length, "Wrong array lengths");
         for (uint256 i = 0; i < dest.length; i++) {
             _call(dest[i], values[i], func[i]);
         }
