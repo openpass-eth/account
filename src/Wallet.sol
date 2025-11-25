@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache
-pragma solidity ^0.8.0;
+pragma solidity 0.8.28;
 
 import "account-abstraction/core/BaseAccount.sol";
 import "openzeppelin/proxy/utils/Initializable.sol";
 import "openzeppelin/utils/cryptography/ECDSA.sol";
+import "openzeppelin/utils/cryptography/MessageHashUtils.sol";
 import "openzeppelin/utils/StorageSlot.sol";
 import "openzeppelin/proxy/utils/UUPSUpgradeable.sol";
 import "openzeppelin/interfaces/IERC1271.sol";
 import "openzeppelin/utils/cryptography/SignatureChecker.sol";
+import "openzeppelin/utils/Address.sol";
+import "account-abstraction/interfaces/PackedUserOperation.sol";
 
-import "./interfaces/IModule.sol";
 import "./interfaces/IWallet.sol";
 import "./libraries/DefaultCallbackHandler.sol";
 
@@ -28,10 +30,10 @@ contract Wallet is
     DefaultCallbackHandler,
     UUPSUpgradeable
 {
-    using ECDSA for bytes32;
     using Address for address;
 
     IEntryPoint private immutable _entryPoint;
+
     struct SigningKey {
         uint256 x; // for passkey
         uint256 y;
@@ -44,6 +46,7 @@ contract Wallet is
 
     struct RecoveryRequest {
         uint256 requestTime;
+        bytes32 keyId;
         SigningKey newSigner;
     }
 
@@ -74,13 +77,15 @@ contract Wallet is
     function _authorizeUpgrade(address) internal override authorized {}
 
     function _validateSignature(
-        UserOperation calldata userOp,
+        PackedUserOperation calldata userOp,
         bytes32 userOpHash
     ) internal view override returns (uint256 validationData) {
         bytes calldata signature = userOp.signature;
         if (bytes4(userOp.callData[:4]) == IWallet.requestRecovery.selector) {
             // In case of recovery request, verify recovery address signature
-            bytes32 messageHash = userOpHash.toEthSignedMessageHash();
+            bytes32 messageHash = MessageHashUtils.toEthSignedMessageHash(
+                userOpHash
+            );
             if (SignatureChecker.isValidSignatureNow(
                 _recovery.recoveryWallet,
                 messageHash,
@@ -124,48 +129,14 @@ contract Wallet is
             msg.sender == address(entryPoint()) || msg.sender == address(this);
     }
 
-    /**
-     * execute a transactions
-     */
-    function _call(address target, uint256 value, bytes memory data) internal {
-        (bool success, bytes memory result) = target.call{value: value}(data);
-        if (!success) {
-            assembly {
-                revert(add(result, 32), mload(result))
-            }
-        }
-    }
-
-    /// @inheritdoc IWallet
-    function execute(
-        address dest,
-        uint256 value,
-        bytes calldata func
-    ) external override(IWallet) authorized {
-        _call(dest, value, func);
-        emit Execute();
-    }
-
-    /// @inheritdoc IWallet
-    function executeBatch(
-        address[] calldata dest,
-        uint256[] calldata values,
-        bytes[] calldata func
-    ) external override(IWallet) authorized {
-        require(dest.length == func.length && dest.length == values.length, "Wrong array lengths");
-        for (uint256 i = 0; i < dest.length; i++) {
-            _call(dest[i], values[i], func[i]);
-        }
-        emit Execute();
-    }
-
     function updateSigner(
+        bytes32 keyId,
         uint256 newX,
         uint256 newY
     ) external override(IWallet) authorized {
         _signer.x = newX;
         _signer.y = newY;
-        emit SignerUpdated(newX, newY);
+        emit SignerUpdated(keyId, newX, newY);
     }
 
     function updateRecovery(
@@ -181,16 +152,18 @@ contract Wallet is
     }
 
     function requestRecovery(
+        bytes32 keyId,
         uint256 newX,
         uint256 newY
     ) external override(IWallet) authorized {
         require(_recovery.recoveryWallet != address(0), "No recovery set");
         _recoveryRequest = RecoveryRequest({
+            keyId: keyId,
             newSigner: SigningKey({x: newX, y: newY}),
             requestTime: block.timestamp
         });
 
-        emit RequestRecovery(newX, newY, block.timestamp);
+        emit RequestRecovery(keyId, newX, newY, block.timestamp);
     }
 
     function rejectRecovery() external override(IWallet) authorized {
@@ -215,9 +188,10 @@ contract Wallet is
         );
 
         _signer = _recoveryRequest.newSigner;
-        delete _recoveryRequest;
 
-        emit RecoverCompleted(_signer.x, _signer.y);
+        emit RecoverCompleted(_recoveryRequest.keyId, _signer.x, _signer.y);
+
+        delete _recoveryRequest;
     }
 
     function entryPoint() public view override returns (IEntryPoint) {
@@ -248,5 +222,35 @@ contract Wallet is
         } else {
             magicValue = 0x00000000;
         }
+    }
+
+    function getSigner() external view returns (uint256 x, uint256 y) {
+        x = _signer.x;
+        y = _signer.y;
+    }
+
+    function getRecovery()
+        external
+        view
+        returns (address recoveryWallet, uint256 delayTime)
+    {
+        recoveryWallet = _recovery.recoveryWallet;
+        delayTime = _recovery.delayTime;
+    }
+
+    function getRecoveryRequest()
+        external
+        view
+        returns (
+            bytes32 keyId,
+            uint256 newX,
+            uint256 newY,
+            uint256 requestTime
+        )
+    {
+        keyId = _recoveryRequest.keyId;
+        newX = _recoveryRequest.newSigner.x;
+        newY = _recoveryRequest.newSigner.y;
+        requestTime = _recoveryRequest.requestTime;
     }
 }

@@ -4,7 +4,6 @@ pragma solidity >=0.8.4;
 import "account-abstraction/core/EntryPoint.sol";
 import "account-abstraction/interfaces/IEntryPoint.sol";
 import "../src/WalletFactory.sol";
-import "../src/modules/Passkey.sol";
 import "../src/Wallet.sol";
 import "./utils/ERC4337Utils.sol";
 import "forge-std/Test.sol";

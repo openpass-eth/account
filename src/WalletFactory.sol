@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: Apache
-pragma solidity ^0.8.0;
+pragma solidity 0.8.28;
 
-import "openzeppelin/utils/Create2.sol";
-
+import {LibClone} from "solady/utils/LibClone.sol";
 import "./interfaces/IWalletFactory.sol";
-import "./libraries/CustomERC1967.sol";
-
 import "./Wallet.sol";
 
 /**
@@ -14,35 +11,30 @@ import "./Wallet.sol";
  * @notice wallet factory use to create new wallet base on our custom ERC1967Proxy
  */
 contract WalletFactory is IWalletFactory {
-    Wallet public immutable walletImplement;
+    address public immutable implementation;
 
     constructor(address entryPoint) {
-        walletImplement = new Wallet(entryPoint);
+        implementation = address(new Wallet(entryPoint));
     }
 
     function createWallet(
+        bytes32 keyId,
         uint256 x,
         uint256 y
-    ) external returns (Wallet) {
+    ) external payable returns (Wallet) {
         bytes32 salt = keccak256(abi.encodePacked(x, y));
-        address payable walletAddress = getWalletAddress(x, y);
-        uint256 codeSize = walletAddress.code.length;
-        if (codeSize > 0) {
-            return Wallet(walletAddress);
-        }
 
-        CustomERC1967 proxy = new CustomERC1967{salt: salt}();
-        proxy.initialize(address(walletImplement));
-        Wallet(walletAddress).__Wallet_init(
-            x,
-            y
-        );
+        (, address walletAddress) =
+            LibClone.createDeterministicERC1967(msg.value, implementation, salt);
 
-        return Wallet(walletAddress);
+        Wallet(payable(walletAddress)).__Wallet_init(x, y);
+
+        emit WalletCreated(keyId, walletAddress);
+        return Wallet(payable(walletAddress));
     }
 
-    function getWalletCreationCodeHash() public pure returns (bytes32) {
-        return keccak256(type(CustomERC1967).creationCode);
+    function initCodeHash() public view virtual returns (bytes32) {
+        return LibClone.initCodeHashERC1967(implementation);
     }
 
     function getWalletAddress(
@@ -50,12 +42,7 @@ contract WalletFactory is IWalletFactory {
         uint256 y
     ) public view returns (address payable) {
         bytes32 salt = keccak256(abi.encodePacked(x, y));
-        return
-            payable(
-                Create2.computeAddress(
-                    salt,
-                    keccak256(type(CustomERC1967).creationCode)
-                )
-            );
+        return payable(LibClone.predictDeterministicAddress(initCodeHash(), salt, address(this)));
     }
+
 }

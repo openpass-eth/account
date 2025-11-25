@@ -6,7 +6,6 @@ import {Script, console2} from "forge-std/Script.sol";
 import "forge-std/console.sol";
 import "account-abstraction/core/EntryPoint.sol";
 import "../src/WalletFactory.sol";
-import "../src/modules/Passkey.sol";
 import "./BaseDeployer.sol";
 
 contract Deployer is Script, BaseDeployer {

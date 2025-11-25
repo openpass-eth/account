@@ -5,9 +5,7 @@ import "account-abstraction/core/EntryPoint.sol";
 import "account-abstraction/interfaces/IEntryPoint.sol";
 
 import "../src/WalletFactory.sol";
-import "../src/libraries/CustomERC1967.sol";
 import "../src/Wallet.sol";
-import "../src/modules/Passkey.sol";
 
 import "forge-std/Test.sol";
 import "forge-std/console.sol";
@@ -15,20 +13,19 @@ import "forge-std/console.sol";
 contract WalletFactoryTest is Test {
     EntryPoint entryPoint;
     WalletFactory walletFactory;
-    PasskeyModule passkey;
 
     function setUp() external {
         entryPoint = new EntryPoint();
         walletFactory = new WalletFactory(address(entryPoint));
-        passkey = new PasskeyModule();
     }
 
     function test_calculateWalletAddress() external {
-        uint256 x = 123456789;
-        uint256 y = 987654321;
+        uint256 x = 1;
+        uint256 y = 1;
 
         address predictedAddress = walletFactory.getWalletAddress(x, y);
-        Wallet deployedWallet = walletFactory.createWallet(x, y);
+        console.log("Predicted Wallet Address: ", predictedAddress);
+        Wallet deployedWallet = walletFactory.createWallet(bytes32(0), x, y);
         assertEq(predictedAddress, address(deployedWallet));
     }
 }

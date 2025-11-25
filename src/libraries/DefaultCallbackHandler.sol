@@ -7,6 +7,8 @@ import "openzeppelin/interfaces/IERC1155Receiver.sol";
 import "openzeppelin/interfaces/IERC777Recipient.sol";
 
 contract DefaultCallbackHandler is IERC721Receiver, IERC1155Receiver, IERC777Recipient, ERC165 {
+    event ReceiveETH(address sender, uint256 amount);
+  
     function onERC1155Received(address, address, uint256, uint256, bytes calldata)
         external
         pure
@@ -43,5 +45,7 @@ contract DefaultCallbackHandler is IERC721Receiver, IERC1155Receiver, IERC777Rec
     }
 
     fallback() external payable {}
-    receive() external payable {}
+    receive() external payable {
+        emit ReceiveETH(msg.sender, msg.value);
+    }
 }
