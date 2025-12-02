@@ -21,11 +21,7 @@ import {WebAuthn} from "./libraries/WebAuthn.sol";
  * @author imduchuyyy
  * @notice This contract represents a Wallet in the system.
  */
-contract Account is
-    IERC1271,
-    BaseAccount,
-    DefaultCallbackHandler
-{
+contract Account is IERC1271, BaseAccount, DefaultCallbackHandler {
     using Address for address;
 
     IEntryPoint private immutable _entryPoint;
@@ -35,37 +31,14 @@ contract Account is
             "SetSigningKey(bytes signers,uint256 nonce)"
         );
 
-    bytes32 constant SET_SPEND_LIMITS_TYPEHASH =
-        keccak256(
-            "SetSpendLimits(bytes spendLimits,uint256 nonce)"
-        );
-
     struct SigningKey {
         uint256 x; // for passkey
         uint256 y;
     }
 
-    struct SpendLimit {
-        address token;
-        uint256 amount;
-        uint256 period; // in seconds
-        uint256 spentAmount;
-    }
-
-    struct Signers {
+    struct AccountStorage {
         uint256 nonce;
         SigningKey[] keys;
-    }
-
-    struct SpendLimits {
-        uint256 nonce;
-        SpendLimit[] limits;
-    }
-
-    struct AccountStorage {
-        bool initialized;
-        Signers signers;
-        SpendLimits spendLimits;
     }
 
     constructor(address entryPointAddress) {
@@ -79,141 +52,19 @@ contract Account is
         }
     }
 
-    /**
-     * @notice This function is used to initialize the wallet with an initial key.
-     */
-    function initialize(
-        bytes memory signers,
-        uint256 nonce,
-        bytes calldata ownerSignature
-    ) external {
-        AccountStorage storage ds = _getAccountStorage();
-        require(!ds.initialized, "Wallet: already initialized");
-
-        setSigningKey(signers, nonce, ownerSignature);
-
-        ds.initialized = true;
-    }
-
-    modifier authorized() {
-        require(_isValidCaller(), "Wallet: Invalid Caller");
-        _;
-    }
-
-    function setSigningKey(
-        bytes memory signers,
-        uint256 nonce,
-        bytes calldata ownerSignature
-    ) public {
-        AccountStorage storage ds = _getAccountStorage();
-        require(nonce > ds.signers.nonce, "Wallet: invalid nonce");
-
-        bytes32 messageHash = MessageHashUtils.toEthSignedMessageHash(
-            keccak256(
-                abi.encode(
-                    SET_SIGNING_KEY_TYPEHASH, 
-                    signers, 
-                    nonce
-                )
-            )
-        );
-
-        require(
-            SignatureChecker.isValidSignatureNow(
-                address(this),
-                messageHash,
-                ownerSignature
-            ),
-            "Wallet: invalid owner signature"
-        );
-
-        SigningKey[] memory initialSigners = abi.decode(signers, (SigningKey[]));
-        for (uint256 i = 0; i < initialSigners.length; i++) {
-            ds.signers.keys.push(initialSigners[i]);
-        }
-        ds.signers.nonce = nonce;
-    }
-
-    function setSpendLimits(
-        bytes memory spendLimits,
-        uint256 nonce,
-        bytes calldata ownerSignature
-    ) external {
-        AccountStorage storage ds = _getAccountStorage();
-        require(nonce > ds.spendLimits.nonce, "Wallet: invalid nonce");
-
-        bytes32 messageHash = MessageHashUtils.toEthSignedMessageHash(
-            keccak256(
-                abi.encode(
-                    SET_SPEND_LIMITS_TYPEHASH, 
-                    spendLimits, 
-                    nonce
-                )
-            )
-        );
-
-        require(
-            SignatureChecker.isValidSignatureNow(
-                address(this),
-                messageHash,
-                ownerSignature
-            ),
-            "Wallet: invalid owner signature"
-        );
-
-        SpendLimit[] memory limits = abi.decode(spendLimits, (SpendLimit[]));
-        for (uint256 i = 0; i < limits.length; i++) {
-            ds.spendLimits.limits.push(limits[i]);
-        }
-        ds.spendLimits.nonce = nonce;
-    }
-
     function _validateSignature(
         PackedUserOperation calldata userOp,
         bytes32 userOpHash
     ) internal view override returns (uint256 validationData) {
-        uint8 keyId = uint8(bytes1(userOp.signature[:1]));
-        bytes calldata signature = userOp.signature[1:];
-        if (keyId == uint8(0)) {
-            // use address(this) as a signer
-            bytes32 messageHash = MessageHashUtils.toEthSignedMessageHash(
-                userOpHash
-            );
+        bytes4 magic = isValidSignature(
+            userOpHash,
+            userOp.signature
+        );
 
-            if (
-                SignatureChecker.isValidSignatureNow(
-                    address(this),
-                    messageHash,
-                    signature[:65]
-                )
-            ) {
-                return 0;
-            } else {
-                return 1;
-            }
+        if (magic == IERC1271.isValidSignature.selector) {
+            return 0;
         } else {
-            AccountStorage storage ds = _getAccountStorage();
-            SigningKey memory signer = ds.signers.keys[keyId];
-            if (signer.x == 0 && signer.y == 0) {
-                return 1;
-            }
-            WebAuthn.WebAuthnAuth memory auth = abi.decode(
-                signature,
-                (WebAuthn.WebAuthnAuth)
-            );
-            if (
-                WebAuthn.verify({
-                    challenge: abi.encode(userOpHash),
-                    requireUV: false,
-                    webAuthnAuth: auth,
-                    x: signer.x,
-                    y: signer.y
-                })
-            ) {
-                validationData = 0;
-            } else {
-                validationData = 1;
-            }
+            return SIG_VALIDATION_FAILED;
         }
     }
 
@@ -224,6 +75,65 @@ contract Account is
         return
             msg.sender == address(entryPoint()) || msg.sender == address(this);
     }
+
+    /**
+     * @notice Owner need to sign the set signing key message off-chain and pass the signature to initialize the account
+     */
+    function initialize(
+        bytes memory signers,
+        bytes calldata ownerSignature
+    ) external {
+        AccountStorage storage ds = _getAccountStorage();
+
+        require(ds.nonce == 0, "Wallet: already initialized");
+
+        bytes32 messageHash = MessageHashUtils.toEthSignedMessageHash(
+            keccak256(
+                abi.encode(
+                    SET_SIGNING_KEY_TYPEHASH, 
+                    signers, 
+                    1
+                )
+            )
+        );
+
+        require(
+            SignatureChecker.isValidSignatureNow(
+                address(this),
+                messageHash,
+                ownerSignature
+            ),
+            "Wallet: invalid owner signature"
+        );
+
+
+        SigningKey[] memory initialSigners = abi.decode(signers, (SigningKey[]));
+        for (uint256 i = 0; i < initialSigners.length; i++) {
+            ds.keys.push(initialSigners[i]);
+        }
+        ds.nonce = 1;
+    }
+
+    modifier authorized() {
+        require(_isValidCaller(), "Wallet: Invalid Caller");
+        _;
+    }
+
+    function setSigningKey(
+        bytes memory signers,
+        uint256 nonce
+    ) public authorized {
+        AccountStorage storage ds = _getAccountStorage();
+        require(nonce > ds.nonce, "Wallet: invalid nonce");
+        SigningKey[] memory newSigners = abi.decode(signers, (SigningKey[]));
+        delete ds.keys;
+        for (uint256 i = 0; i < newSigners.length; i++) {
+            ds.keys.push(newSigners[i]);
+        }
+
+        ds.nonce = nonce;
+    }
+
 
     function entryPoint() public view override returns (IEntryPoint) {
         return _entryPoint;
@@ -257,7 +167,7 @@ contract Account is
             }
         } else {
             AccountStorage storage ds = _getAccountStorage();
-            SigningKey memory signer = ds.signers.keys[keyId];
+            SigningKey memory signer = ds.keys[keyId];
             if (signer.x == 0 && signer.y == 0) {
                 return 0xffffffff;
             }
