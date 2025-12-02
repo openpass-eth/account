@@ -21,7 +21,7 @@ import {WebAuthn} from "./libraries/WebAuthn.sol";
  * @author imduchuyyy
  * @notice This contract represents a Wallet in the system.
  */
-contract Account is IERC1271, BaseAccount, DefaultCallbackHandler {
+contract DelegateAccount is IERC1271, BaseAccount, DefaultCallbackHandler {
     using Address for address;
 
     IEntryPoint private immutable _entryPoint;
@@ -76,23 +76,25 @@ contract Account is IERC1271, BaseAccount, DefaultCallbackHandler {
             msg.sender == address(entryPoint()) || msg.sender == address(this);
     }
 
-    /**
-     * @notice Owner need to sign the set signing key message off-chain and pass the signature to initialize the account
-     */
-    function initialize(
-        bytes memory signers,
-        bytes calldata ownerSignature
-    ) external {
-        AccountStorage storage ds = _getAccountStorage();
+    modifier authorized() {
+        require(_isValidCaller(), "Wallet: Invalid Caller");
+        _;
+    }
 
-        require(ds.nonce == 0, "Wallet: already initialized");
+    function setSigningKey(
+        bytes memory signers,
+        uint256 nonce,
+        bytes memory ownerSignature
+    ) public {
+        AccountStorage storage ds = _getAccountStorage();
+        require(ds.nonce < nonce, "Wallet: invalid nonce");
 
         bytes32 messageHash = MessageHashUtils.toEthSignedMessageHash(
             keccak256(
                 abi.encode(
                     SET_SIGNING_KEY_TYPEHASH, 
                     signers, 
-                    1
+                    nonce
                 )
             )
         );
@@ -111,26 +113,6 @@ contract Account is IERC1271, BaseAccount, DefaultCallbackHandler {
         for (uint256 i = 0; i < initialSigners.length; i++) {
             ds.keys.push(initialSigners[i]);
         }
-        ds.nonce = 1;
-    }
-
-    modifier authorized() {
-        require(_isValidCaller(), "Wallet: Invalid Caller");
-        _;
-    }
-
-    function setSigningKey(
-        bytes memory signers,
-        uint256 nonce
-    ) public authorized {
-        AccountStorage storage ds = _getAccountStorage();
-        require(nonce > ds.nonce, "Wallet: invalid nonce");
-        SigningKey[] memory newSigners = abi.decode(signers, (SigningKey[]));
-        delete ds.keys;
-        for (uint256 i = 0; i < newSigners.length; i++) {
-            ds.keys.push(newSigners[i]);
-        }
-
         ds.nonce = nonce;
     }
 
