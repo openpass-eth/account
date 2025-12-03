@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "account-abstraction/core/BaseAccount.sol";
+import "account-abstraction/core/Helpers.sol";
 import "openzeppelin/proxy/utils/Initializable.sol";
 import "openzeppelin/utils/cryptography/ECDSA.sol";
 import "openzeppelin/utils/cryptography/MessageHashUtils.sol";

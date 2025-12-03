@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import "account-abstraction/core/BaseAccount.sol";
+import "account-abstraction/core/Helpers.sol";
 import "openzeppelin/proxy/utils/Initializable.sol";
 import "openzeppelin/utils/cryptography/ECDSA.sol";
 import "openzeppelin/utils/cryptography/MessageHashUtils.sol";
@@ -62,7 +63,7 @@ contract DelegateAccount is IERC1271, BaseAccount, DefaultCallbackHandler {
         );
 
         if (magic == IERC1271.isValidSignature.selector) {
-            return 0;
+            return SIG_VALIDATION_SUCCESS;
         } else {
             return SIG_VALIDATION_FAILED;
         }
@@ -89,13 +90,11 @@ contract DelegateAccount is IERC1271, BaseAccount, DefaultCallbackHandler {
         AccountStorage storage ds = _getAccountStorage();
         require(ds.nonce < nonce, "Wallet: invalid nonce");
 
-        bytes32 messageHash = MessageHashUtils.toEthSignedMessageHash(
-            keccak256(
-                abi.encode(
-                    SET_SIGNING_KEY_TYPEHASH, 
-                    signers, 
-                    nonce
-                )
+        bytes32 messageHash = keccak256(
+            abi.encode(
+                SET_SIGNING_KEY_TYPEHASH,
+                keccak256(signers),
+                nonce
             )
         );
 
